@@ -136,7 +136,7 @@ func (k *KVStore) Stats(ctx context.Context) (KVStats, error) {
 	return stats, nil
 }
 
-// WatchEvent is one KV watch envelope (docs/kv-watch.md in the server
+// WatchEvent is one KV watch envelope (docs/features/kv-watch.md in the server
 // repository).
 //
 // Value is the post-mutation value and is empty for terminal events (del,
