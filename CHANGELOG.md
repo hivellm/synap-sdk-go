@@ -5,6 +5,16 @@ All notable changes to the Synap Go SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **KV watch.** `client.KV().Watch(ctx, pattern, opts...)` streams
+  value-carrying change envelopes as a channel of the new `WatchEvent` struct,
+  over a dedicated `KV.WATCH` push connection. `synap.WithNotifyMode()` asks
+  the server to strip values per subscription. Cancelling the context (or the
+  returned stop) issues `KV.UNWATCH` and closes the channel. SynapRPC only;
+  HTTP clients get a clear error pointing at the `/kv/ws` endpoint.
+
 ## [1.2.0] - 2026-07-19
 
 Released alongside Synap 1.2.0. No functional change since 1.1.1 — the version

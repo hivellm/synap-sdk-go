@@ -2,6 +2,7 @@ package synap
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -265,6 +266,72 @@ func (t *SynapRpcTransport) SubscribePush(
 	}
 
 	return subscriberID, func() { c.Close() }, nil
+}
+
+// WatchPush opens a dedicated push connection driven by KV.WATCH and delivers
+// each decoded watch envelope to onEvent — the watch twin of SubscribePush.
+//
+// The push hook is registered before KV.WATCH is sent, so an event published
+// between the server's acknowledgement and the reader starting cannot be lost.
+// The returned cancel issues KV.UNWATCH (best-effort) before closing the
+// dedicated connection.
+func (t *SynapRpcTransport) WatchPush(
+	ctx context.Context,
+	pattern string,
+	mode string,
+	onEvent func(map[string]interface{}),
+) (subscriberID string, cancel func(), err error) {
+	c, err := t.dial()
+	if err != nil {
+		return "", nil, err
+	}
+
+	c.OnPush(func(v wire.Value) {
+		frame, ok := fromWire(v).(map[string]interface{})
+		if !ok {
+			return
+		}
+		// The bridge encodes the envelope as a JSON string.
+		payload, ok := frame["payload"].(string)
+		if !ok {
+			return
+		}
+		var envelope map[string]interface{}
+		if json.Unmarshal([]byte(payload), &envelope) != nil {
+			return
+		}
+		onEvent(envelope)
+	})
+
+	args := []wire.Value{wire.Str(pattern)}
+	if mode != "" && mode != "value" {
+		args = append(args, wire.Str(mode))
+	}
+
+	ack, err := c.Call(ctx, "KV.WATCH", args...)
+	if err != nil {
+		c.Close()
+		return "", nil, newServerError(err.Error())
+	}
+
+	if idValue, ok := ack.MapGet("subscriber_id"); ok {
+		if s, ok := idValue.AsStr(); ok {
+			subscriberID = s
+		}
+	}
+
+	sid := subscriberID
+	return subscriberID, func() {
+		// Teardown issues KV.UNWATCH so the server drops the routing entry
+		// promptly; closing the connection unwinds it anyway, so a failure
+		// here is ignored. A fresh context: the caller's is likely cancelled.
+		if sid != "" {
+			unwatchCtx, done := context.WithTimeout(context.Background(), 2*time.Second)
+			_, _ = c.Call(unwatchCtx, "KV.UNWATCH", wire.Str(sid))
+			done()
+		}
+		c.Close()
+	}, nil
 }
 
 // Close tears down the connection and fails anything still in flight.

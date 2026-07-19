@@ -106,6 +106,35 @@ stats, err := kv.Stats(ctx)
 fmt.Println(stats.TotalKeys, stats.HitRate)
 ```
 
+### KV Watch
+
+Observe a key — or a wildcard pattern — and receive its **new value** on every
+change, without polling. Requires the `synap://` transport; cancelling the
+context (or calling stop) issues `KV.UNWATCH` and closes the channel:
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+// Watch one key, or a whole prefix
+events, stop, err := client.KV().Watch(ctx, "user:*")
+if err != nil {
+    log.Fatal(err)
+}
+defer stop()
+
+for e := range events {
+    // e: WatchEvent{Key, Event, Version, Value, Truncated}
+    fmt.Printf("%s %s v%d = %q\n", e.Event, e.Key, e.Version, e.Value)
+}
+
+// Notify-only mode: change signals without value bandwidth (re-Get on demand)
+signals, stop, err := client.KV().Watch(ctx, "hot:key", synap.WithNotifyMode())
+```
+
+Delivery is best-effort, latest-value; `Version` resets when the key is
+deleted, expires or is evicted — version 1 marks a new incarnation.
+
 ## Queue
 
 ```go
