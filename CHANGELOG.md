@@ -43,13 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   encoder replaces every invalid UTF-8 sequence with U+FFFD. Payload fields are
   now read by reflection, so strings stay byte-exact.
 
-### Known limitations
-- **A binary value still does not survive a round trip.** The outbound path and
-  the transport are byte-exact now, but responses are still shuttled from the
-  transport to the module methods as JSON, and that re-introduces the same U+FFFD
-  substitution on the way back. Fixing it means replacing that internal plumbing
-  across every module. Tracked as the remaining work from
-  `phase20_thunder-go-sdk-swap`.
+- **A binary value survives a full round trip.** Responses used to be re-encoded
+  as JSON to reach the module methods, which re-introduced the same U+FFFD
+  substitution inbound. The binary transport now carries typed Go values all the
+  way to the caller; HTTP and RESP3, which genuinely speak JSON, are unchanged.
+  `Set`/`Get` of `deadbeef` returns `deadbeef`.
 
 ## [1.0.0] - 2026-07-11
 

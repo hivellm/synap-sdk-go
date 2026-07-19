@@ -2,7 +2,6 @@ package synap
 
 import (
 	"context"
-	"encoding/json"
 )
 
 // QueueManager provides queue operations against the Synap server.
@@ -66,7 +65,7 @@ func (q *QueueManager) Publish(ctx context.Context, name string, payload []byte,
 	var result struct {
 		MessageID string `json:"message_id"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return "", newInvalidResponseError("queue.publish: " + err.Error())
 	}
 	return result.MessageID, nil
@@ -87,10 +86,10 @@ func (q *QueueManager) Consume(ctx context.Context, name, consumerID string) (*M
 	var wrapper struct {
 		Message *Message `json:"message"`
 	}
-	if err := json.Unmarshal(raw, &wrapper); err != nil {
+	if err := raw.Decode(&wrapper); err != nil {
 		// Fallback: try to unmarshal directly as a Message.
 		var msg Message
-		if err2 := json.Unmarshal(raw, &msg); err2 != nil {
+		if err2 := raw.Decode(&msg); err2 != nil {
 			return nil, newInvalidResponseError("queue.consume: " + err.Error())
 		}
 		if msg.ID == "" {
@@ -131,7 +130,7 @@ func (q *QueueManager) Stats(ctx context.Context, name string) (QueueStats, erro
 		return QueueStats{}, err
 	}
 	var stats QueueStats
-	if err := json.Unmarshal(raw, &stats); err != nil {
+	if err := raw.Decode(&stats); err != nil {
 		return QueueStats{}, newInvalidResponseError("queue.stats: " + err.Error())
 	}
 	return stats, nil
@@ -146,7 +145,7 @@ func (q *QueueManager) List(ctx context.Context) ([]string, error) {
 	var result struct {
 		Queues []string `json:"queues"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return nil, newInvalidResponseError("queue.list: " + err.Error())
 	}
 	return result.Queues, nil

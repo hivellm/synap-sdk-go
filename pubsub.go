@@ -2,7 +2,6 @@ package synap
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 )
 
@@ -26,7 +25,7 @@ func (p *PubSubManager) Publish(ctx context.Context, topic string, data interfac
 	var result struct {
 		SubscribersMatched int `json:"subscribers_matched"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return 0, newInvalidResponseError("pubsub.publish: " + err.Error())
 	}
 	return result.SubscribersMatched, nil
@@ -48,7 +47,7 @@ func (p *PubSubManager) Subscribe(ctx context.Context, subscriberID string, topi
 		SubscriberID   string `json:"subscriber_id"`
 		SubscriptionID string `json:"subscription_id"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return "", newInvalidResponseError("pubsub.subscribe: " + err.Error())
 	}
 	if result.SubscriberID != "" {
@@ -76,7 +75,7 @@ func (p *PubSubManager) ListTopics(ctx context.Context) ([]string, error) {
 	var result struct {
 		Topics []string `json:"topics"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return nil, newInvalidResponseError("pubsub.topics: " + err.Error())
 	}
 	return result.Topics, nil

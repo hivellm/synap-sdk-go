@@ -31,12 +31,12 @@ type Event struct {
 
 // StreamStats holds statistics for a stream room.
 type StreamStats struct {
-	Name           string `json:"name"`
-	MessageCount   int    `json:"message_count"`
-	MaxOffset      uint64 `json:"max_offset"`
-	TotalPublished uint64 `json:"total_published"`
-	TotalConsumed  uint64 `json:"total_consumed"`
-	SubscriberCount int   `json:"subscriber_count"`
+	Name            string `json:"name"`
+	MessageCount    int    `json:"message_count"`
+	MaxOffset       uint64 `json:"max_offset"`
+	TotalPublished  uint64 `json:"total_published"`
+	TotalConsumed   uint64 `json:"total_consumed"`
+	SubscriberCount int    `json:"subscriber_count"`
 }
 
 // KVStats holds statistics for the KV store.

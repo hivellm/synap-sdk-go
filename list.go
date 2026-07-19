@@ -2,7 +2,6 @@ package synap
 
 import (
 	"context"
-	"encoding/json"
 )
 
 // ListManager provides list data structure operations against the Synap server.
@@ -25,7 +24,7 @@ func (l *ListManager) LPush(ctx context.Context, key string, values []string) (i
 	var result struct {
 		Length int `json:"length"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return 0, newInvalidResponseError("list.lpush: " + err.Error())
 	}
 	return result.Length, nil
@@ -45,7 +44,7 @@ func (l *ListManager) RPush(ctx context.Context, key string, values []string) (i
 	var result struct {
 		Length int `json:"length"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return 0, newInvalidResponseError("list.rpush: " + err.Error())
 	}
 	return result.Length, nil
@@ -69,7 +68,7 @@ func (l *ListManager) LPop(ctx context.Context, key string, count int) ([]string
 	var result struct {
 		Values []string `json:"values"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return nil, newInvalidResponseError("list.lpop: " + err.Error())
 	}
 	return result.Values, nil
@@ -93,7 +92,7 @@ func (l *ListManager) RPop(ctx context.Context, key string, count int) ([]string
 	var result struct {
 		Values []string `json:"values"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return nil, newInvalidResponseError("list.rpop: " + err.Error())
 	}
 	return result.Values, nil
@@ -115,7 +114,7 @@ func (l *ListManager) Range(ctx context.Context, key string, start, stop int) ([
 	var result struct {
 		Values []string `json:"values"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return nil, newInvalidResponseError("list.range: " + err.Error())
 	}
 	return result.Values, nil
@@ -133,7 +132,7 @@ func (l *ListManager) Len(ctx context.Context, key string) (int, error) {
 	var result struct {
 		Length int `json:"length"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return 0, newInvalidResponseError("list.len: " + err.Error())
 	}
 	return result.Length, nil

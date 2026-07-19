@@ -2,7 +2,6 @@ package synap
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 )
 
@@ -39,11 +38,11 @@ func (k *KVStore) Get(ctx context.Context, key string) (string, error) {
 		return "", err
 	}
 	// Server returns null when key is absent.
-	if string(raw) == "null" {
+	if raw.IsNull() {
 		return "", nil
 	}
 	var value string
-	if err := json.Unmarshal(raw, &value); err != nil {
+	if err := raw.Decode(&value); err != nil {
 		return "", newInvalidResponseError("kv.get: " + err.Error())
 	}
 	return value, nil
@@ -61,7 +60,7 @@ func (k *KVStore) Delete(ctx context.Context, key string) (bool, error) {
 	var result struct {
 		Deleted bool `json:"deleted"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return false, newInvalidResponseError("kv.del: " + err.Error())
 	}
 	return result.Deleted, nil
@@ -79,7 +78,7 @@ func (k *KVStore) Exists(ctx context.Context, key string) (bool, error) {
 	var result struct {
 		Exists bool `json:"exists"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return false, newInvalidResponseError("kv.exists: " + err.Error())
 	}
 	return result.Exists, nil
@@ -98,7 +97,7 @@ func (k *KVStore) Incr(ctx context.Context, key string) (int64, error) {
 	var result struct {
 		Value int64 `json:"value"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return 0, newInvalidResponseError("kv.incr: " + err.Error())
 	}
 	return result.Value, nil
@@ -117,7 +116,7 @@ func (k *KVStore) Decr(ctx context.Context, key string) (int64, error) {
 	var result struct {
 		Value int64 `json:"value"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return 0, newInvalidResponseError("kv.decr: " + err.Error())
 	}
 	return result.Value, nil
@@ -130,7 +129,7 @@ func (k *KVStore) Stats(ctx context.Context) (KVStats, error) {
 		return KVStats{}, err
 	}
 	var stats KVStats
-	if err := json.Unmarshal(raw, &stats); err != nil {
+	if err := raw.Decode(&stats); err != nil {
 		return KVStats{}, newInvalidResponseError("kv.stats: " + err.Error())
 	}
 	return stats, nil

@@ -2,7 +2,6 @@ package synap
 
 import (
 	"context"
-	"encoding/json"
 )
 
 // HashManager provides hash data structure operations against the Synap server.
@@ -26,7 +25,7 @@ func (h *HashManager) Set(ctx context.Context, key, field, value string) (bool, 
 	var result struct {
 		Success bool `json:"success"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return false, newInvalidResponseError("hash.set: " + err.Error())
 	}
 	return result.Success, nil
@@ -46,7 +45,7 @@ func (h *HashManager) Get(ctx context.Context, key, field string) (string, error
 	var result struct {
 		Value *string `json:"value"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return "", newInvalidResponseError("hash.get: " + err.Error())
 	}
 	if result.Value == nil {
@@ -67,7 +66,7 @@ func (h *HashManager) GetAll(ctx context.Context, key string) (map[string]string
 	var result struct {
 		Fields map[string]string `json:"fields"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return nil, newInvalidResponseError("hash.getall: " + err.Error())
 	}
 	if result.Fields == nil {
@@ -90,7 +89,7 @@ func (h *HashManager) Del(ctx context.Context, key, field string) (int64, error)
 	var result struct {
 		Deleted int64 `json:"deleted"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return 0, newInvalidResponseError("hash.del: " + err.Error())
 	}
 	return result.Deleted, nil
@@ -109,7 +108,7 @@ func (h *HashManager) Exists(ctx context.Context, key, field string) (bool, erro
 	var result struct {
 		Exists bool `json:"exists"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return false, newInvalidResponseError("hash.exists: " + err.Error())
 	}
 	return result.Exists, nil

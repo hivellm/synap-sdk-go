@@ -169,7 +169,7 @@ func (c *SynapClient) Set() *SetManager { return &SetManager{client: c} }
 
 // sendCommand dispatches to the active transport (SynapRPC, RESP3, or HTTP)
 // and returns the raw payload bytes. The caller unmarshals into the expected type.
-func (c *SynapClient) sendCommand(ctx context.Context, command string, payload interface{}) (json.RawMessage, error) {
+func (c *SynapClient) sendCommand(ctx context.Context, command string, payload interface{}) (response, error) {
 	if c.rpc != nil {
 		return c.sendRPC(ctx, command, payload)
 	}
@@ -180,7 +180,7 @@ func (c *SynapClient) sendCommand(ctx context.Context, command string, payload i
 }
 
 // sendRPC dispatches a command via the SynapRPC binary transport.
-func (c *SynapClient) sendRPC(ctx context.Context, command string, payload interface{}) (json.RawMessage, error) {
+func (c *SynapClient) sendRPC(ctx context.Context, command string, payload interface{}) (response, error) {
 	// Reach the payload's fields by reflection rather than through JSON.
 	//
 	// This used to marshal to JSON and unmarshal straight back into a map,
@@ -192,54 +192,51 @@ func (c *SynapClient) sendRPC(ctx context.Context, command string, payload inter
 	// Map SDK command to native wire command + args
 	wireCmd, wireArgs, err := mapCommandToWire(command, payloadMap)
 	if err != nil {
-		return nil, err
+		return response{}, err
 	}
 
 	// Execute via RPC transport
 	result, err := c.rpc.Execute(ctx, wireCmd, wireArgs)
 	if err != nil {
-		return nil, err
+		return response{}, err
 	}
 
 	// Normalize int types (msgpack deserializes small ints as int8/uint8/int16 etc.)
 	result = normalizeInts(result)
 
-	// Map the native response back to the JSON shape the module methods expect
-	mapped := mapResponseFromWire(command, result)
-	respBytes, err := json.Marshal(mapped)
-	if err != nil {
-		return nil, fmt.Errorf("synap: marshal rpc response: %w", err)
-	}
-	return json.RawMessage(respBytes), nil
+	// Hand the module methods typed Go values. Re-encoding them as JSON here
+	// is what destroyed binary values: Go's JSON encoder replaces every invalid
+	// UTF-8 sequence with U+FFFD, so `deadbeef` came back `deadefbfbdefbfbd`.
+	return valueResponse(mapResponseFromWire(command, result)), nil
 }
 
 // sendRESP3 dispatches a command via the RESP3 TCP transport.
 // The wire encoding follows RESP2 multibulk; responses are plain Go values
 // (string, int64, nil, []interface{}) that are fed through mapResponseFromWire.
-func (c *SynapClient) sendRESP3(ctx context.Context, command string, payload interface{}) (json.RawMessage, error) {
+func (c *SynapClient) sendRESP3(ctx context.Context, command string, payload interface{}) (response, error) {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("synap: marshal payload: %w", err)
+		return response{}, fmt.Errorf("synap: marshal payload: %w", err)
 	}
 	var payloadMap map[string]interface{}
 	_ = json.Unmarshal(payloadBytes, &payloadMap)
 
 	wireCmd, wireArgs, err := mapCommandToWire(command, payloadMap)
 	if err != nil {
-		return nil, err
+		return response{}, err
 	}
 
 	result, err := c.resp3.Execute(ctx, wireCmd, wireArgs)
 	if err != nil {
-		return nil, err
+		return response{}, err
 	}
 
 	mapped := mapResponseFromWire(command, result)
 	respBytes, err := json.Marshal(mapped)
 	if err != nil {
-		return nil, fmt.Errorf("synap: marshal resp3 response: %w", err)
+		return response{}, fmt.Errorf("synap: marshal resp3 response: %w", err)
 	}
-	return json.RawMessage(respBytes), nil
+	return jsonResponse(respBytes), nil
 }
 
 // normalizeInts converts any integer type (int8, uint8, int16, etc.) to int64.
@@ -267,15 +264,15 @@ func normalizeInts(v interface{}) interface{} {
 }
 
 // sendHTTP dispatches a command via the HTTP REST transport.
-func (c *SynapClient) sendHTTP(ctx context.Context, command string, payload interface{}) (json.RawMessage, error) {
+func (c *SynapClient) sendHTTP(ctx context.Context, command string, payload interface{}) (response, error) {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("synap: marshal payload: %w", err)
+		return response{}, fmt.Errorf("synap: marshal payload: %w", err)
 	}
 
 	reqID, err := newRequestID()
 	if err != nil {
-		return nil, fmt.Errorf("synap: generate request_id: %w", err)
+		return response{}, fmt.Errorf("synap: generate request_id: %w", err)
 	}
 
 	env := commandEnvelope{
@@ -286,12 +283,12 @@ func (c *SynapClient) sendHTTP(ctx context.Context, command string, payload inte
 
 	body, err := json.Marshal(env)
 	if err != nil {
-		return nil, fmt.Errorf("synap: marshal envelope: %w", err)
+		return response{}, fmt.Errorf("synap: marshal envelope: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("synap: build request: %w", err)
+		return response{}, fmt.Errorf("synap: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -300,22 +297,22 @@ func (c *SynapClient) sendHTTP(ctx context.Context, command string, payload inte
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("synap: http: %w", err)
+		return response{}, fmt.Errorf("synap: http: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("synap: read response body: %w", err)
+		return response{}, fmt.Errorf("synap: read response body: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, newServerError(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBytes)))
+		return response{}, newServerError(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBytes)))
 	}
 
 	var envelope responseEnvelope
 	if err := json.Unmarshal(respBytes, &envelope); err != nil {
-		return nil, fmt.Errorf("synap: unmarshal response: %w", err)
+		return response{}, fmt.Errorf("synap: unmarshal response: %w", err)
 	}
 
 	if !envelope.Success {
@@ -323,10 +320,10 @@ func (c *SynapClient) sendHTTP(ctx context.Context, command string, payload inte
 		if envelope.Error != nil {
 			msg = *envelope.Error
 		}
-		return nil, newServerError(msg)
+		return response{}, newServerError(msg)
 	}
 
-	return envelope.Payload, nil
+	return jsonResponse(envelope.Payload), nil
 }
 
 // mapCommandToWire converts an SDK command + JSON payload to native wire command + args.

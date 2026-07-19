@@ -23,13 +23,7 @@ Supports three transports, auto-detected from the URL scheme:
 > | **Authentication** | `WithAuth` / `WithBasicAuth` credentials travel in the handshake. The previous transport never sent `AUTH`, so it could not reach a `require_auth` server on 15501 at all — every command came back `NOAUTH`. |
 > | **Push** | `PubSub().Observe()` streams server-push frames. The previous transport had no push support of any kind. |
 > | **Legacy servers** | Thunder decodes both the canonical MessagePack `bin` form of `Bytes` that Synap 1.1.0+ emits and the legacy array-of-integers form. |
->
-> **Known limitation — binary values.** A value that is not valid UTF-8 does not
-> survive `Set`/`Get` on this SDK. The transport itself is byte-exact; the loss
-> is above it, in the JSON the client uses to shuttle responses between the
-> transport and the module methods (`encoding/json` replaces invalid UTF-8 with
-> U+FFFD). Use a UTF-8 value, or the HTTP transport, until that plumbing is
-> replaced. Other Synap SDKs are unaffected.
+> | **Binary values** | A value that is not valid UTF-8 survives `Set`/`Get` byte-exact. On `synap://` replies reach the module methods as typed values rather than as JSON — `encoding/json` replaces invalid UTF-8 with U+FFFD, which used to corrupt binary in both directions. |
 
 ## Requirements
 

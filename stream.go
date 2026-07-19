@@ -2,7 +2,6 @@ package synap
 
 import (
 	"context"
-	"encoding/json"
 )
 
 // StreamManager provides event stream operations against the Synap server.
@@ -48,7 +47,7 @@ func (s *StreamManager) GetOrCreate(ctx context.Context, room string, maxEvents 
 	var result struct {
 		Created bool `json:"created"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return false, newInvalidResponseError("stream.get_or_create: " + err.Error())
 	}
 	return result.Created, nil
@@ -69,7 +68,7 @@ func (s *StreamManager) Publish(ctx context.Context, room, eventType string, dat
 	var result struct {
 		Offset uint64 `json:"offset"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return 0, newInvalidResponseError("stream.publish: " + err.Error())
 	}
 	return result.Offset, nil
@@ -95,20 +94,14 @@ func (s *StreamManager) Consume(ctx context.Context, room string, offset uint64,
 		return nil, err
 	}
 	var result struct {
-		Events []json.RawMessage `json:"events"`
+		// Decoded in one pass rather than event by event: on the binary
+		// transport the events arrive as typed values, not as nested JSON.
+		Events []Event `json:"events"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return nil, newInvalidResponseError("stream.consume: " + err.Error())
 	}
-	events := make([]Event, 0, len(result.Events))
-	for _, rawEvent := range result.Events {
-		var e Event
-		if err := json.Unmarshal(rawEvent, &e); err != nil {
-			return nil, newInvalidResponseError("stream.consume: decode event: " + err.Error())
-		}
-		events = append(events, e)
-	}
-	return events, nil
+	return result.Events, nil
 }
 
 // Stats returns statistics for the named stream room.
@@ -121,7 +114,7 @@ func (s *StreamManager) Stats(ctx context.Context, room string) (StreamStats, er
 		return StreamStats{}, err
 	}
 	var stats StreamStats
-	if err := json.Unmarshal(raw, &stats); err != nil {
+	if err := raw.Decode(&stats); err != nil {
 		return StreamStats{}, newInvalidResponseError("stream.stats: " + err.Error())
 	}
 	return stats, nil
@@ -136,7 +129,7 @@ func (s *StreamManager) List(ctx context.Context) ([]string, error) {
 	var result struct {
 		Rooms []string `json:"rooms"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return nil, newInvalidResponseError("stream.list: " + err.Error())
 	}
 	return result.Rooms, nil

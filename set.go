@@ -2,7 +2,6 @@ package synap
 
 import (
 	"context"
-	"encoding/json"
 )
 
 // SetManager provides set data structure operations against the Synap server.
@@ -25,7 +24,7 @@ func (s *SetManager) Add(ctx context.Context, key string, members []string) (int
 	var result struct {
 		Added int `json:"added"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return 0, newInvalidResponseError("set.add: " + err.Error())
 	}
 	return result.Added, nil
@@ -43,7 +42,7 @@ func (s *SetManager) Members(ctx context.Context, key string) ([]string, error) 
 	var result struct {
 		Members []string `json:"members"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return nil, newInvalidResponseError("set.members: " + err.Error())
 	}
 	return result.Members, nil
@@ -62,7 +61,7 @@ func (s *SetManager) IsMember(ctx context.Context, key, member string) (bool, er
 	var result struct {
 		IsMember bool `json:"is_member"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return false, newInvalidResponseError("set.ismember: " + err.Error())
 	}
 	return result.IsMember, nil
@@ -82,7 +81,7 @@ func (s *SetManager) Remove(ctx context.Context, key string, members []string) (
 	var result struct {
 		Removed int `json:"removed"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return 0, newInvalidResponseError("set.rem: " + err.Error())
 	}
 	return result.Removed, nil
@@ -100,7 +99,7 @@ func (s *SetManager) Card(ctx context.Context, key string) (int, error) {
 	var result struct {
 		Cardinality int `json:"size"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := raw.Decode(&result); err != nil {
 		return 0, newInvalidResponseError("set.card: " + err.Error())
 	}
 	return result.Cardinality, nil
