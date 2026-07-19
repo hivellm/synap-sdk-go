@@ -22,7 +22,7 @@ Supports three transports, auto-detected from the URL scheme:
 > | **Frame cap** | 512 MiB, validated against the length prefix **before** allocating. |
 > | **Authentication** | `WithAuth` / `WithBasicAuth` credentials travel in the handshake. The previous transport never sent `AUTH`, so it could not reach a `require_auth` server on 15501 at all — every command came back `NOAUTH`. |
 > | **Push** | `PubSub().Observe()` streams server-push frames. The previous transport had no push support of any kind. |
-> | **Legacy servers** | Thunder decodes both the canonical MessagePack `bin` form of `Bytes` that Synap 1.1.0+ emits and the legacy array-of-integers form. |
+> | **Legacy servers** | Thunder decodes both the canonical MessagePack `bin` form of `Bytes` that Synap 1.2.0+ emits and the legacy array-of-integers form. |
 > | **Binary values** | A value that is not valid UTF-8 survives `Set`/`Get` byte-exact. On `synap://` replies reach the module methods as typed values rather than as JSON — `encoding/json` replaces invalid UTF-8 with U+FFFD, which used to corrupt binary in both directions. |
 
 ## Requirements
