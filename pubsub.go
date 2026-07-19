@@ -3,6 +3,7 @@ package synap
 import (
 	"context"
 	"encoding/json"
+	"sync"
 )
 
 // PubSubManager provides pub/sub operations against the Synap server.
@@ -79,4 +80,83 @@ func (p *PubSubManager) ListTopics(ctx context.Context) ([]string, error) {
 		return nil, newInvalidResponseError("pubsub.topics: " + err.Error())
 	}
 	return result.Topics, nil
+}
+
+// PushMessage is one message delivered on a push subscription.
+type PushMessage struct {
+	Topic     string
+	Payload   string
+	ID        string
+	Timestamp int64
+}
+
+// Observe opens a dedicated push subscription and streams messages published
+// to the given topics.
+//
+// This is only available on the `synap://` transport: server push is a
+// SynapRPC capability, and Thunder routes push frames — the ones carrying the
+// reserved id — to a hook rather than to a waiting call. HTTP and RESP3
+// clients get ErrPushUnsupported.
+//
+// The push hook is registered before SUBSCRIBE is sent, so a message published
+// between the server's acknowledgement and the reader starting cannot be lost.
+// Cancel the context, or call the returned stop, to close the subscription;
+// the channel is closed when it ends.
+func (p *PubSubManager) Observe(
+	ctx context.Context,
+	topics []string,
+) (messages <-chan PushMessage, subscriberID string, stop func(), err error) {
+	if p.client.rpc == nil {
+		return nil, "", nil, newServerError(
+			"pub/sub push requires the synap:// transport; " +
+				"this client is on HTTP or RESP3")
+	}
+
+	// Buffered so a slow consumer cannot block the connection's reader.
+	out := make(chan PushMessage, 64)
+	var once sync.Once
+
+	subscriberID, cancel, err := p.client.rpc.SubscribePush(ctx, topics,
+		func(frame map[string]interface{}) {
+			msg := PushMessage{
+				Topic:   asString(frame["topic"]),
+				Payload: asString(frame["payload"]),
+				ID:      asString(frame["id"]),
+			}
+			if ts, ok := frame["timestamp"].(int64); ok {
+				msg.Timestamp = ts
+			}
+			select {
+			case out <- msg:
+			default:
+				// Dropping is better than stalling the shared reader; a
+				// consumer that cannot keep up loses the oldest frames.
+			}
+		})
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	shutdown := func() {
+		once.Do(func() {
+			cancel()
+			close(out)
+		})
+	}
+
+	// Cancelling the caller's context tears the subscription down too.
+	go func() {
+		<-ctx.Done()
+		shutdown()
+	}()
+
+	return out, subscriberID, shutdown, nil
+}
+
+// asString renders a push-frame field that is expected to be textual.
+func asString(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }

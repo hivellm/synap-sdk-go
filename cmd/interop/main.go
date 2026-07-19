@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"time"
 
-	synap "github.com/hivellm/synap/sdks/go"
+	synap "github.com/hivellm/synap-sdk-go"
 )
 
 // Not valid UTF-8, so a transport that quietly round-trips through a string

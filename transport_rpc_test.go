@@ -1,186 +1,290 @@
 package synap
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/vmihailenco/msgpack/v5"
+	"github.com/hivellm/thunder-go/wire"
 )
 
-// The server's `Bytes` encoding changed in Synap 1.1.0: it now emits
-// MessagePack `bin` (~33% smaller) where it used to emit an array of integers.
-// A client that understands only one of the two silently breaks against a
-// server of the other vintage, so both must decode to the same string.
-func TestUnwrapSynapValueAcceptsBothBytesEncodings(t *testing.T) {
-	t.Parallel()
+// The transport is Thunder's now, so these tests pin the contract Synap
+// depends on — the protocol config, the value mapping, and the behaviour a
+// caller can observe — rather than re-testing framing Thunder already covers.
 
+func TestSynapConfigMatchesWhatTheServerDeclares(t *testing.T) {
+	// The server's `synap_config()` and five SDKs hard-code these values. A
+	// silent change on either side desynchronises the wire.
+	c := synapConfig()
+
+	if c.Scheme != "synap" {
+		t.Errorf("scheme = %q, want synap", c.Scheme)
+	}
+	if c.DefaultPort != 15501 {
+		t.Errorf("default port = %d, want 15501", c.DefaultPort)
+	}
+	if c.MaxFrameBytes != 512*1024*1024 {
+		t.Errorf("frame cap = %d, want 512 MiB", c.MaxFrameBytes)
+	}
+	if c.Handshake.String() != "auth_command" {
+		t.Errorf("handshake = %s, want auth_command", c.Handshake)
+	}
+	if c.HelloStyle.String() != "not_used" {
+		t.Errorf("hello style = %s, want not_used", c.HelloStyle)
+	}
+	if c.Push.String() != "enabled" {
+		t.Errorf("push = %s, want enabled", c.Push)
+	}
+	if c.ErrorCodes.String() != "resp3_prefixes" {
+		t.Errorf("error codes = %s, want resp3_prefixes", c.ErrorCodes)
+	}
+}
+
+func TestFrameCapIsNotBelowTheLegacyCap(t *testing.T) {
+	// This client capped at 64 MiB while the server accepted 512 MiB, so it
+	// rejected frames the server considered legitimate.
+	if MaxFrameBytes < 512*1024*1024 {
+		t.Fatalf("frame cap %d is below the server's 512 MiB", MaxFrameBytes)
+	}
+}
+
+func TestNonUTF8StringTravelsAsBytes(t *testing.T) {
+	// A Go string is an arbitrary byte sequence and the SDK's surface is
+	// string-typed, so this is the only way a caller can hand over binary.
+	// Sent as `str` the server decoded it lossily: deadbeef came back as
+	// deadefbfbdefbfbd.
+	payload := string([]byte{0xDE, 0xAD, 0xBE, 0xEF})
+
+	got := toWire(payload)
+
+	if got.Kind() != wire.KindBytes {
+		t.Fatalf("kind = %v, want Bytes", got.Kind())
+	}
+	b, _ := got.AsBytes()
+	if string(b) != payload {
+		t.Errorf("bytes = %x, want %x", b, payload)
+	}
+}
+
+func TestValidUTF8StringStaysAString(t *testing.T) {
+	got := toWire("hello")
+
+	if got.Kind() != wire.KindStr {
+		t.Fatalf("kind = %v, want Str", got.Kind())
+	}
+	s, _ := got.AsStr()
+	if s != "hello" {
+		t.Errorf("str = %q, want hello", s)
+	}
+}
+
+func TestBytesDecodeBackToAStringByteExact(t *testing.T) {
+	payload := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+
+	got := fromWire(wire.Bytes(payload))
+
+	s, ok := got.(string)
+	if !ok {
+		t.Fatalf("got %T, want string", got)
+	}
+	if s != string(payload) {
+		t.Errorf("decoded %x, want %x", s, payload)
+	}
+}
+
+func TestFromWireCoversEveryScalarKind(t *testing.T) {
 	cases := []struct {
 		name string
-		wire interface{}
+		in   wire.Value
+		want interface{}
 	}{
-		{
-			// What a 1.1.0+ server emits: MessagePack bin, decoded as []byte.
-			name: "canonical bin",
-			wire: map[string]interface{}{"Bytes": []byte("hello")},
-		},
-		{
-			// What a pre-1.1.0 server emits: rmp_serde's Vec<u8> as an array
-			// of integers. Kept working indefinitely.
-			name: "legacy int array",
-			wire: map[string]interface{}{"Bytes": []interface{}{
-				int64('h'), int64('e'), int64('l'), int64('l'), int64('o'),
-			}},
-		},
+		{"null", wire.Null(), nil},
+		{"bool", wire.Bool(true), true},
+		{"int", wire.Int(42), int64(42)},
+		{"float", wire.Float(2.5), 2.5},
+		{"str", wire.Str("PONG"), "PONG"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := unwrapSynapValue(tc.wire)
-			if got != "hello" {
-				t.Fatalf("expected %q, got %#v", "hello", got)
+			if got := fromWire(tc.in); got != tc.want {
+				t.Errorf("got %#v, want %#v", got, tc.want)
 			}
 		})
 	}
 }
 
-// The cap must match the server's, or this client rejects frames the server
-// considers legitimate. It was 64 MiB against a 512 MiB server.
-func TestMaxFrameBytesMatchesTheServerCap(t *testing.T) {
-	t.Parallel()
+// ── Behaviour against a socket ───────────────────────────────────────────────
 
-	const serverCap = 512 * 1024 * 1024
-	if maxFrameBytes != serverCap {
-		t.Fatalf("frame cap %d does not match the server's %d", maxFrameBytes, serverCap)
-	}
-}
-
-// A length prefix above the cap must be refused on the header alone — before
-// the body buffer is allocated, and without waiting for a body that a hostile
-// peer need never send.
-func TestExecuteRefusesOverCapLengthPrefix(t *testing.T) {
-	t.Parallel()
+// echoServer answers every request with its first argument, so a test can
+// assert what actually reached the wire.
+func echoServer(t *testing.T, onRequest func(wire.Request)) (host string, port int, stop func()) {
+	t.Helper()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer listener.Close()
+	addr := listener.Addr().(*net.TCPAddr)
 
 	go func() {
-		conn, acceptErr := listener.Accept()
-		if acceptErr != nil {
-			return
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go serveEcho(conn, onRequest)
 		}
-		defer conn.Close()
-
-		// Read the request frame the client sends.
-		header := make([]byte, 4)
-		if _, readErr := io.ReadFull(conn, header); readErr != nil {
-			return
-		}
-		bodyLen := binary.LittleEndian.Uint32(header)
-		if _, readErr := io.ReadFull(conn, make([]byte, bodyLen)); readErr != nil {
-			return
-		}
-
-		// Answer with a header claiming more than the cap, and no body.
-		reply := make([]byte, 4)
-		binary.LittleEndian.PutUint32(reply, uint32(maxFrameBytes)+1)
-		_, _ = conn.Write(reply)
-
-		// Hold the connection open so a client that allocated first would
-		// block here rather than failing.
-		time.Sleep(2 * time.Second)
 	}()
 
-	addr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("unexpected listener address type %T", listener.Addr())
-	}
-
-	transport := newSynapRpcTransport("127.0.0.1", addr.Port, 5*time.Second)
-	defer transport.Close()
-
-	if _, execErr := transport.Execute(context.Background(), "GET", []interface{}{"k"}); execErr == nil {
-		t.Fatal("expected an over-cap frame to be refused")
-	}
+	return "127.0.0.1", addr.Port, func() { listener.Close() }
 }
 
-// The request encoding is unchanged by the cap and decoding work: decode it
-// here with msgpack directly, so this asserts the wire rather than the SDK's
-// own round-trip.
-func TestExecuteSendsExternallyTaggedArgs(t *testing.T) {
-	t.Parallel()
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer listener.Close()
-
-	received := make(chan []byte, 1)
-
-	go func() {
-		conn, acceptErr := listener.Accept()
-		if acceptErr != nil {
-			return
-		}
-		defer conn.Close()
-
+func serveEcho(conn net.Conn, onRequest func(wire.Request)) {
+	defer conn.Close()
+	for {
 		header := make([]byte, 4)
-		if _, readErr := io.ReadFull(conn, header); readErr != nil {
+		if _, err := io.ReadFull(conn, header); err != nil {
 			return
 		}
 		body := make([]byte, binary.LittleEndian.Uint32(header))
-		if _, readErr := io.ReadFull(conn, body); readErr != nil {
+		if _, err := io.ReadFull(conn, body); err != nil {
 			return
 		}
-		received <- body
 
-		// Reply Ok("PONG") so Execute returns cleanly.
-		reply, marshalErr := msgpack.Marshal([]interface{}{
-			uint32(1),
-			map[string]interface{}{"Ok": map[string]interface{}{"Str": "PONG"}},
-		})
-		if marshalErr != nil {
+		req, err := wire.DecodeRequestBody(body)
+		if err != nil {
 			return
 		}
-		out := make([]byte, 4+len(reply))
-		binary.LittleEndian.PutUint32(out[:4], uint32(len(reply)))
-		copy(out[4:], reply)
-		_, _ = conn.Write(out)
-	}()
+		if onRequest != nil {
+			onRequest(req)
+		}
 
-	addr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("unexpected listener address type %T", listener.Addr())
+		reply := wire.Str("OK")
+		if len(req.Args) > 0 {
+			reply = req.Args[0]
+		}
+		out, err := wire.EncodeFrame(wire.ResponseOK(req.ID, reply))
+		if err != nil {
+			return
+		}
+		if _, err := conn.Write(out); err != nil {
+			return
+		}
 	}
+}
 
-	transport := newSynapRpcTransport("127.0.0.1", addr.Port, 5*time.Second)
+func TestExecuteRoundTripsBinaryOverASocket(t *testing.T) {
+	host, port, stop := echoServer(t, nil)
+	defer stop()
+
+	transport := newSynapRpcTransport(host, port, 5*time.Second)
 	defer transport.Close()
 
-	got, err := transport.Execute(context.Background(), "get", []interface{}{"mykey"})
+	payload := string([]byte{0xDE, 0xAD, 0xBE, 0xEF})
+	got, err := transport.Execute(context.Background(), "SET", []interface{}{payload})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if got != "PONG" {
-		t.Fatalf("expected PONG, got %#v", got)
+
+	if got != payload {
+		t.Errorf("round trip gave %x, want %x", got, payload)
+	}
+}
+
+func TestConcurrentCommandsShareOneConnection(t *testing.T) {
+	// The old transport held a mutex across each request/response round trip,
+	// so commands serialized and the request id it incremented was decorative.
+	// Thunder demultiplexes by id, so these genuinely overlap — and each
+	// response must still match its own request.
+	var mu sync.Mutex
+	seen := map[uint32]bool{}
+
+	host, port, stop := echoServer(t, func(req wire.Request) {
+		mu.Lock()
+		seen[req.ID] = true
+		mu.Unlock()
+	})
+	defer stop()
+
+	transport := newSynapRpcTransport(host, port, 5*time.Second)
+	defer transport.Close()
+
+	const n = 32
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	results := make([]interface{}, n)
+
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			want := fmt.Sprintf("value-%d", i)
+			results[i], errs[i] = transport.Execute(
+				context.Background(), "GET", []interface{}{want})
+		}(i)
+	}
+	wg.Wait()
+
+	for i := range n {
+		if errs[i] != nil {
+			t.Fatalf("call %d: %v", i, errs[i])
+		}
+		want := fmt.Sprintf("value-%d", i)
+		if results[i] != want {
+			t.Errorf("call %d got %v, want %s — a response was mismatched",
+				i, results[i], want)
+		}
 	}
 
-	body := <-received
-	if !bytes.Contains(body, []byte("GET")) {
-		t.Errorf("command should be upper-cased on the wire, got %q", body)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != n {
+		t.Errorf("server saw %d distinct request ids, want %d", len(seen), n)
 	}
-	if !bytes.Contains(body, []byte("Str")) {
-		t.Errorf("args should be externally tagged, got %q", body)
+}
+
+func TestExecuteRefusesOverCapLengthPrefix(t *testing.T) {
+	// A hostile peer must not be able to drive an unbounded allocation from a
+	// four-byte prefix: the cap is checked before the body is read.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
 	}
-	if !bytes.Contains(body, []byte("mykey")) {
-		t.Errorf("argument value missing from the frame, got %q", body)
+	defer listener.Close()
+	addr := listener.Addr().(*net.TCPAddr)
+
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		header := make([]byte, 4)
+		if _, err := io.ReadFull(conn, header); err != nil {
+			return
+		}
+		body := make([]byte, binary.LittleEndian.Uint32(header))
+		_, _ = io.ReadFull(conn, body)
+
+		// Claim a body far larger than the cap, and send nothing after it.
+		oversized := make([]byte, 4)
+		binary.LittleEndian.PutUint32(oversized, uint32(MaxFrameBytes)+1)
+		_, _ = conn.Write(oversized)
+		time.Sleep(300 * time.Millisecond)
+	}()
+
+	transport := newSynapRpcTransport("127.0.0.1", addr.Port, 2*time.Second)
+	defer transport.Close()
+
+	_, err = transport.Execute(context.Background(), "GET", []interface{}{"k"})
+	if err == nil {
+		t.Fatal("an over-cap length prefix must be refused")
 	}
 }

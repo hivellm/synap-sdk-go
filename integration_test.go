@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	synap "github.com/hivellm/synap/sdks/go"
+	synap "github.com/hivellm/synap-sdk-go"
 )
 
 var transports = []struct {

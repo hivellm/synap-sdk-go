@@ -181,13 +181,13 @@ func (c *SynapClient) sendCommand(ctx context.Context, command string, payload i
 
 // sendRPC dispatches a command via the SynapRPC binary transport.
 func (c *SynapClient) sendRPC(ctx context.Context, command string, payload interface{}) (json.RawMessage, error) {
-	// Marshal payload to JSON first, then extract fields for wire args
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("synap: marshal payload: %w", err)
-	}
-	var payloadMap map[string]interface{}
-	_ = json.Unmarshal(payloadBytes, &payloadMap)
+	// Reach the payload's fields by reflection rather than through JSON.
+	//
+	// This used to marshal to JSON and unmarshal straight back into a map,
+	// purely to look fields up by name — but Go's JSON encoder replaces every
+	// invalid UTF-8 sequence with U+FFFD, so a binary value was destroyed here,
+	// inside the client, before it was ever framed. See payloadToMap.
+	payloadMap := payloadToMap(payload)
 
 	// Map SDK command to native wire command + args
 	wireCmd, wireArgs, err := mapCommandToWire(command, payloadMap)

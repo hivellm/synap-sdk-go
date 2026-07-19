@@ -10,24 +10,36 @@ Supports three transports, auto-detected from the URL scheme:
 | **RESP3** (Redis-compatible) | `resp3://host:6379` | |
 | HTTP/REST (fallback) | `http://host:15500` | |
 
-> **On the SynapRPC transport.** Synap's other SDKs now get this transport from
-> [Thunder](https://github.com/hivellm/thunder), the family's shared binary RPC
-> implementation. The Go client is written but not yet consumable — its module
-> path does not resolve ([thunder#9](https://github.com/hivellm/thunder/issues/9))
-> — so this SDK keeps its own transport for now. It is kept at wire parity: it
-> decodes both the canonical MessagePack `bin` form of `Bytes` that Synap 1.1.0+
-> emits and the legacy array-of-integers form, and it enforces the server's
-> 512 MiB frame cap against the length prefix before allocating.
+> **The `synap://` transport is Thunder.** The binary transport is no longer
+> hand-written here. It is [Thunder](https://github.com/hivellm/thunder)
+> (`github.com/hivellm/thunder-go`) — the HiveLLM family's shared binary RPC
+> client, the same protocol the Synap server runs on, so the two ends of the
+> wire cannot drift.
+>
+> | | |
+> |---|---|
+> | **Pipelining** | Concurrent commands multiplex over one connection, demultiplexed by frame id. The previous transport held a mutex across each round trip, so commands serialized and the request id it incremented was decorative. |
+> | **Frame cap** | 512 MiB, validated against the length prefix **before** allocating. |
+> | **Authentication** | `WithAuth` / `WithBasicAuth` credentials travel in the handshake. The previous transport never sent `AUTH`, so it could not reach a `require_auth` server on 15501 at all — every command came back `NOAUTH`. |
+> | **Push** | `PubSub().Observe()` streams server-push frames. The previous transport had no push support of any kind. |
+> | **Legacy servers** | Thunder decodes both the canonical MessagePack `bin` form of `Bytes` that Synap 1.1.0+ emits and the legacy array-of-integers form. |
+>
+> **Known limitation — binary values.** A value that is not valid UTF-8 does not
+> survive `Set`/`Get` on this SDK. The transport itself is byte-exact; the loss
+> is above it, in the JSON the client uses to shuttle responses between the
+> transport and the module methods (`encoding/json` replaces invalid UTF-8 with
+> U+FFFD). Use a UTF-8 value, or the HTTP transport, until that plumbing is
+> replaced. Other Synap SDKs are unaffected.
 
 ## Requirements
 
-- Go 1.22+
-- `github.com/vmihailenco/msgpack/v5` (for SynapRPC)
+- Go 1.25+ (raised from 1.22 by the Thunder client)
+- `github.com/hivellm/thunder-go` (SynapRPC transport)
 
 ## Installation
 
 ```bash
-go get github.com/hivellm/synap/sdks/go
+go get github.com/hivellm/synap-sdk-go
 ```
 
 ## Quick start
@@ -40,7 +52,7 @@ import (
     "fmt"
     "time"
 
-    synap "github.com/hivellm/synap/sdks/go"
+    synap "github.com/hivellm/synap-sdk-go"
 )
 
 func main() {
