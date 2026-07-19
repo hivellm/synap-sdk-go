@@ -5,6 +5,16 @@ All notable changes to the Synap Go SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-07-19
+
+### Fixed
+- **A binary value survives a full round trip.** 1.1.0 fixed the outbound path
+  and the transport, but replies were still re-encoded as JSON to reach the
+  module methods, and Go's JSON encoder replaces every invalid UTF-8 sequence
+  with U+FFFD — so `deadbeef` came back as `deadefbfbdefbfbd`. Replies on
+  `synap://` now travel to the caller as typed values. HTTP and RESP3, which
+  genuinely speak JSON, are unchanged.
+
 ## [1.1.0] - 2026-07-19
 
 ### Changed
@@ -43,11 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   encoder replaces every invalid UTF-8 sequence with U+FFFD. Payload fields are
   now read by reflection, so strings stay byte-exact.
 
-- **A binary value survives a full round trip.** Responses used to be re-encoded
-  as JSON to reach the module methods, which re-introduced the same U+FFFD
-  substitution inbound. The binary transport now carries typed Go values all the
-  way to the caller; HTTP and RESP3, which genuinely speak JSON, are unchanged.
-  `Set`/`Get` of `deadbeef` returns `deadbeef`.
+- **Known limitation, fixed in 1.1.1:** a binary value does not survive a full
+  round trip in this version — replies still travel to the module methods as
+  JSON.
 
 ## [1.0.0] - 2026-07-11
 
