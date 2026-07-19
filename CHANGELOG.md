@@ -5,7 +5,7 @@ All notable changes to the Synap Go SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-07-19
 
 ### Changed
 - **The `synap://` transport now runs on [Thunder](https://github.com/hivellm/thunder)**
@@ -14,8 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot drift. The hand-written framing, socket handling, reconnect loop and
   request-id bookkeeping are gone.
 - **The module path is now `github.com/hivellm/synap-sdk-go`**, matching this
-  repository. It declared `github.com/hivellm/synap/sdks/go` while living at the
-  new URL, so `go get` could not resolve it at all.
+  repository, which is where the Go SDK now lives. The previous module,
+  `github.com/hivellm/synap/sdks/go`, stays resolvable at its published versions
+  (through v0.11.1) — the Go proxy is immutable — but receives no further
+  releases. Migrating is a one-line import change:
+
+  ```go
+  // before
+  import synap "github.com/hivellm/synap/sdks/go"
+  // after
+  import synap "github.com/hivellm/synap-sdk-go"
+  ```
 - **Minimum Go is now 1.25**, raised from 1.22 by the Thunder client.
 
 ### Added
