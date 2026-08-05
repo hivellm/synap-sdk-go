@@ -5,6 +5,36 @@ All notable changes to the Synap Go SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Consuming a stream over a native transport works at all.**
+  `stream.consume` mapped to `SCONSUME`, a command the Synap server has never
+  implemented, so every SynapRPC/RESP3 consume failed as an unknown command; it
+  now maps to `SREAD` and carries room, subscriber, offset and limit. The rest
+  of the family was mapped but had no reply translation, so `stream.publish`,
+  `stream.list`, `stream.create`, `stream.delete` and `stream.get_or_create`
+  now translate their raw wire replies into the shapes the stream module
+  decodes, and `stream.get_or_create` reaches the native transports at all
+  (it had no `SGETORCREATE` mapping). Covered by a new `command_map_test.go`
+  that pins each command to the name the server dispatches.
+
+### Added
+- **Room wipe discriminator** (hivellm/synap#257, server 1.3.1): `StreamStats`
+  carries `CreatedAt` and `Generation`. Generation identifies this incarnation
+  of the room and is strictly increasing across every room creation, including
+  server restarts — remember it alongside your offset cursor and rewind when it
+  changes, because every counter in the payload resets on a wipe and can
+  coincide with a pre-wipe value. `MinOffset` is now decoded too.
+
+### Changed
+- `github.com/hivellm/thunder-go` 0.2.1 → 0.2.2, matching the version every
+  other end of the wire runs.
+- The `go` directive is pinned at 1.25.12: `govulncheck` reported 13 standard
+  library advisories reachable from this module under 1.25.4 (crypto/tls,
+  crypto/x509, net/http, net/url, net/textproto), and 1.25.12 clears all of
+  them. Scan is clean.
+
 ## [1.2.3] - 2026-07-20
 
 Realigns the Go SDK onto the shared Synap SDK version — all six SDKs now sit at

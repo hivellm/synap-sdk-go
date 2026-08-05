@@ -33,10 +33,19 @@ type Event struct {
 type StreamStats struct {
 	Name            string `json:"name"`
 	MessageCount    int    `json:"message_count"`
+	MinOffset       uint64 `json:"min_offset"`
 	MaxOffset       uint64 `json:"max_offset"`
 	TotalPublished  uint64 `json:"total_published"`
 	TotalConsumed   uint64 `json:"total_consumed"`
 	SubscriberCount int    `json:"subscriber_count"`
+	// CreatedAt is the epoch-millisecond instant the room was (re)created.
+	CreatedAt uint64 `json:"created_at"`
+	// Generation identifies this incarnation of the room. It is strictly
+	// increasing across every room creation, including server restarts, so a
+	// consumer that remembers it alongside its offset cursor detects a room
+	// wipe: every counter above resets on a wipe and can coincide with a
+	// pre-wipe value, this one cannot. See hivellm/synap#257.
+	Generation uint64 `json:"generation"`
 }
 
 // KVStats holds statistics for the KV store.

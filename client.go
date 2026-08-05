@@ -484,10 +484,20 @@ func mapCommandToWire(command string, payload map[string]interface{}) (string, [
 	// Stream
 	case "stream.create":
 		return "SCREATE", []interface{}{getStr("room")}, nil
+	case "stream.get_or_create":
+		return "SGETORCREATE", []interface{}{getStr("room")}, nil
 	case "stream.publish":
 		return "SPUBLISH", []interface{}{getStr("room"), getStr("event"), getStr("data")}, nil
 	case "stream.consume":
-		return "SCONSUME", []interface{}{getStr("room"), getStr("subscriber_id"), int(getFloat("from_offset")), int(getFloat("limit"))}, nil
+		// SREAD, not SCONSUME: the server has never had a SCONSUME command, so
+		// consuming a stream over a native transport used to fail as an unknown
+		// command. Limit is optional on the wire and defaults to 100.
+		return "SREAD", []interface{}{
+			getStr("room"),
+			getStr("subscriber_id"),
+			int(getFloat("from_offset")),
+			int(getFloat("limit")),
+		}, nil
 	case "stream.list":
 		return "SLIST", []interface{}{}, nil
 	case "stream.stats":
@@ -675,6 +685,29 @@ func mapResponseFromWire(command string, result interface{}) interface{} {
 		}
 		return map[string]interface{}{"queues": []interface{}{}}
 	case "queue.stats":
+		return result
+	case "stream.create", "stream.delete":
+		return map[string]interface{}{}
+	case "stream.get_or_create":
+		// SGETORCREATE replies with the simple string CREATED or EXISTS.
+		created := false
+		if s, ok := result.(string); ok {
+			created = s == "CREATED"
+		}
+		return map[string]interface{}{"created": created}
+	case "stream.publish":
+		return map[string]interface{}{"offset": result}
+	case "stream.consume":
+		if arr, ok := result.([]interface{}); ok {
+			return map[string]interface{}{"events": arr}
+		}
+		return map[string]interface{}{"events": []interface{}{}}
+	case "stream.list":
+		if arr, ok := result.([]interface{}); ok {
+			return map[string]interface{}{"rooms": arr}
+		}
+		return map[string]interface{}{"rooms": []interface{}{}}
+	case "stream.stats":
 		return result
 	default:
 		return result
