@@ -485,3 +485,24 @@ func TestIntegration_Stream(t *testing.T) {
 		})
 	}
 }
+
+// Pub/Sub over every transport. Topic listing is the interesting one: the two
+// native wires spell it differently, so a single mapping breaks one of them.
+func TestIntegration_PubSub(t *testing.T) {
+	for _, tr := range transports {
+		t.Run(tr.name, func(t *testing.T) {
+			cfg := synap.NewConfig(tr.url).WithTimeout(5 * time.Second)
+			client := synap.NewClient(cfg)
+			ctx := context.Background()
+			topic := fmt.Sprintf("go.pubsub.%s", tr.name)
+
+			if _, err := client.PubSub().Publish(ctx, topic, map[string]int{"n": 1}, 0); err != nil {
+				t.Fatalf("Publish: %v", err)
+			}
+
+			if _, err := client.PubSub().ListTopics(ctx); err != nil {
+				t.Fatalf("ListTopics: %v", err)
+			}
+		})
+	}
+}

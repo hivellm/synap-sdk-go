@@ -32,6 +32,12 @@ skipped so the number matches the server release this SDK is verified against.
   RESP3, including that nothing reaches the store before `Exec`.
 
 ### Fixed
+- **Pub/Sub works on the native transports.** Topic listing mapped to `TOPICS`
+  for both native wires, but only SynapRPC dispatches it — RESP3 answers
+  `PUBSUB CHANNELS`, so listing over RESP3 failed as an unknown command;
+  `mapCommandToWire` now takes the transport for the commands whose wire name
+  differs. The pub/sub replies also had no translation, so `Publish` and
+  `ListTopics` failed to decode the raw wire value on both native wires.
 - **RESP3 maps decode at all.** The reader stopped at the `%` type byte with
   `unknown type byte "%"`, and the server answers `SSTATS`, `SUBSCRIBE` and
   every `SREAD` entry with a map — so streams were unusable over RESP3 even

@@ -218,7 +218,7 @@ func (c *SynapClient) sendRPC(ctx context.Context, command string, payload inter
 	}
 
 	// Map SDK command to native wire command + args
-	wireCmd, wireArgs, err := mapCommandToWire(command, payloadMap)
+	wireCmd, wireArgs, err := mapCommandToWire(command, payloadMap, TransportSynapRPC)
 	if err != nil {
 		return response{}, err
 	}
@@ -255,7 +255,7 @@ func (c *SynapClient) sendRESP3(ctx context.Context, command string, payload int
 		payloadMap["client_id"] = c.txClientID
 	}
 
-	wireCmd, wireArgs, err := mapCommandToWire(command, payloadMap)
+	wireCmd, wireArgs, err := mapCommandToWire(command, payloadMap, TransportRESP3)
 	if err != nil {
 		return response{}, err
 	}
@@ -370,7 +370,6 @@ func (c *SynapClient) sendHTTP(ctx context.Context, command string, payload inte
 	return jsonResponse(envelope.Payload), nil
 }
 
-// mapCommandToWire converts an SDK command + JSON payload to native wire command + args.
 // txQueueable lists the raw commands the server can queue inside a MULTI via
 // TXQUEUE (ADR 005) — exactly the server's TransactionCommand enum.
 var txQueueable = map[string]struct{}{
@@ -381,7 +380,10 @@ var txQueueable = map[string]struct{}{
 	"SADD": {}, "SREM": {},
 }
 
-func mapCommandToWire(command string, payload map[string]interface{}) (string, []interface{}, error) {
+// mapCommandToWire converts an SDK command + payload to the raw wire command
+// and arguments. The transport is needed for the handful of commands the two
+// native wires spell differently.
+func mapCommandToWire(command string, payload map[string]interface{}, transport TransportMode) (string, []interface{}, error) {
 	// A write carrying a client_id belongs to an open MULTI and travels as
 	// `TXQUEUE <client_id> <CMD> <args...>`, so the server queues it instead of
 	// executing it immediately (ADR 005). Anything the server cannot queue is
@@ -394,7 +396,7 @@ func mapCommandToWire(command string, payload map[string]interface{}) (string, [
 				rest[k] = v
 			}
 		}
-		innerCmd, innerArgs, err := mapCommandToWire(command, rest)
+		innerCmd, innerArgs, err := mapCommandToWire(command, rest, transport)
 		if err != nil {
 			return "", nil, err
 		}
@@ -617,6 +619,12 @@ func mapCommandToWire(command string, payload map[string]interface{}) (string, [
 		}
 		return "UNSUBSCRIBE", args, nil
 	case "pubsub.topics":
+		// The two native wires name this differently: SynapRPC dispatches
+		// TOPICS and has no PUBSUB, RESP3 dispatches PUBSUB CHANNELS (the Redis
+		// spelling) and has no TOPICS.
+		if transport == TransportRESP3 {
+			return "PUBSUB", []interface{}{"CHANNELS"}, nil
+		}
 		return "TOPICS", []interface{}{}, nil
 
 	// Utility
@@ -805,6 +813,23 @@ func mapResponseFromWire(command string, result interface{}) interface{} {
 		return map[string]interface{}{"rooms": []interface{}{}}
 	case "stream.stats":
 		return result
+	case "pubsub.publish":
+		// PUBLISH replies with the number of subscribers reached.
+		if m, ok := result.(map[string]interface{}); ok {
+			return m
+		}
+		return map[string]interface{}{"subscribers_matched": result}
+	case "pubsub.subscribe":
+		// SUBSCRIBE replies with {subscriber_id, subscription_count}; the caller
+		// needs the id to unsubscribe later.
+		return result
+	case "pubsub.unsubscribe":
+		return map[string]interface{}{}
+	case "pubsub.topics":
+		if arr, ok := result.([]interface{}); ok {
+			return map[string]interface{}{"topics": arr}
+		}
+		return map[string]interface{}{"topics": []interface{}{}}
 	case "transaction.multi", "transaction.discard", "transaction.watch", "transaction.unwatch":
 		return map[string]interface{}{"success": result == "OK" || result == true}
 	case "transaction.exec":

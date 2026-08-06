@@ -24,7 +24,7 @@ func TestStreamCommandsMapToTheNamesTheServerDispatches(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		raw, _, err := mapCommandToWire(tc.command, tc.payload)
+		raw, _, err := mapCommandToWire(tc.command, tc.payload, TransportSynapRPC)
 		if err != nil {
 			t.Fatalf("%s: unexpected error: %v", tc.command, err)
 		}
@@ -40,7 +40,7 @@ func TestStreamConsumeCarriesRoomSubscriberOffsetAndLimit(t *testing.T) {
 		"subscriber_id": "sub-1",
 		"from_offset":   float64(7),
 		"limit":         float64(25),
-	})
+	}, TransportSynapRPC)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -112,6 +112,28 @@ func TestStreamPublishResponseCarriesTheOffset(t *testing.T) {
 	}
 }
 
+// The two native wires name topic listing differently: SynapRPC dispatches
+// TOPICS and has no PUBSUB, RESP3 dispatches PUBSUB CHANNELS and has no TOPICS
+// — so one mapping cannot serve both, and listing topics over RESP3 came back
+// "unknown command 'TOPICS'".
+func TestTopicListingFollowsTheTransport(t *testing.T) {
+	raw, args, err := mapCommandToWire("pubsub.topics", map[string]interface{}{}, TransportSynapRPC)
+	if err != nil {
+		t.Fatalf("SynapRPC: unexpected error: %v", err)
+	}
+	if raw != "TOPICS" || len(args) != 0 {
+		t.Errorf("SynapRPC mapped to %q %v, want TOPICS with no args", raw, args)
+	}
+
+	raw, args, err = mapCommandToWire("pubsub.topics", map[string]interface{}{}, TransportRESP3)
+	if err != nil {
+		t.Fatalf("RESP3: unexpected error: %v", err)
+	}
+	if raw != "PUBSUB" || len(args) != 1 || args[0] != "CHANNELS" {
+		t.Errorf("RESP3 mapped to %q %v, want PUBSUB CHANNELS", raw, args)
+	}
+}
+
 // ── Transactions (ADR 005) ───────────────────────────────────────────────────
 
 func TestTransactionControlCommandsMapToTheirWireNames(t *testing.T) {
@@ -126,7 +148,7 @@ func TestTransactionControlCommandsMapToTheirWireNames(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		raw, args, err := mapCommandToWire(tc.command, map[string]interface{}{"client_id": "cli-1"})
+		raw, args, err := mapCommandToWire(tc.command, map[string]interface{}{"client_id": "cli-1"}, TransportSynapRPC)
 		if err != nil {
 			t.Fatalf("%s: unexpected error: %v", tc.command, err)
 		}
@@ -145,7 +167,7 @@ func TestTransactionWatchCarriesClientIdThenKeys(t *testing.T) {
 	raw, args, err := mapCommandToWire("transaction.watch", map[string]interface{}{
 		"client_id": "cli-1",
 		"keys":      []interface{}{"a", "b"},
-	})
+	}, TransportSynapRPC)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -170,7 +192,7 @@ func TestWriteWithClientIdIsQueuedThroughTxqueue(t *testing.T) {
 		"key":       "k",
 		"value":     "v",
 		"client_id": "cli-1",
-	})
+	}, TransportSynapRPC)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -208,7 +230,7 @@ func TestEveryQueueableWriteFamilyIsWrapped(t *testing.T) {
 			payload[k] = v
 		}
 
-		raw, args, err := mapCommandToWire(tc.command, payload)
+		raw, args, err := mapCommandToWire(tc.command, payload, TransportSynapRPC)
 		if err != nil {
 			t.Fatalf("%s: unexpected error: %v", tc.command, err)
 		}
@@ -233,7 +255,7 @@ func TestUnqueueableCommandWithClientIdIsRefused(t *testing.T) {
 			"queue":     "q",
 			"client_id": "cli-1",
 		}
-		if _, _, err := mapCommandToWire(command, payload); err == nil {
+		if _, _, err := mapCommandToWire(command, payload, TransportSynapRPC); err == nil {
 			t.Errorf("%s inside a transaction should be refused, got no error", command)
 		}
 	}
