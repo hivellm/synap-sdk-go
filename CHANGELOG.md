@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-08-06
+
+Catches the Go SDK up with the server: it was still on 1.2.3 while the server
+reached 1.3.1, so it carried neither the 1.3.0 transaction work nor the 1.3.1
+stream fixes. Two of the gaps were not "missing features" but broken wires —
+consuming a stream over a native transport, and reading any RESP3 map — which
+had shipped that way because nothing tested the command mapping. 1.3.0 is
+skipped so the number matches the server release this SDK is verified against.
+
 ### Added
 - **Transactions.** `client.Transaction()` opens a Redis-compatible
   MULTI/EXEC scope — the last SDK to get one. `Multi(ctx)` returns a `*Tx`
