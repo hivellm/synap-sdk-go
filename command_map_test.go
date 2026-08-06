@@ -112,6 +112,149 @@ func TestStreamPublishResponseCarriesTheOffset(t *testing.T) {
 	}
 }
 
+// ── Transactions (ADR 005) ───────────────────────────────────────────────────
+
+func TestTransactionControlCommandsMapToTheirWireNames(t *testing.T) {
+	cases := []struct {
+		command string
+		wantRaw string
+	}{
+		{"transaction.multi", "MULTI"},
+		{"transaction.exec", "EXEC"},
+		{"transaction.discard", "DISCARD"},
+		{"transaction.unwatch", "UNWATCH"},
+	}
+
+	for _, tc := range cases {
+		raw, args, err := mapCommandToWire(tc.command, map[string]interface{}{"client_id": "cli-1"})
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", tc.command, err)
+		}
+		if raw != tc.wantRaw {
+			t.Errorf("%s mapped to %q, want %q", tc.command, raw, tc.wantRaw)
+		}
+		// The client id is the command's own first argument here, never a
+		// TXQUEUE wrapper.
+		if len(args) == 0 || args[0] != "cli-1" {
+			t.Errorf("%s args are %v, want the client id first", tc.command, args)
+		}
+	}
+}
+
+func TestTransactionWatchCarriesClientIdThenKeys(t *testing.T) {
+	raw, args, err := mapCommandToWire("transaction.watch", map[string]interface{}{
+		"client_id": "cli-1",
+		"keys":      []interface{}{"a", "b"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if raw != "WATCH" {
+		t.Fatalf("raw command is %q, want WATCH", raw)
+	}
+	want := []interface{}{"cli-1", "a", "b"}
+	if len(args) != len(want) {
+		t.Fatalf("got %v, want %v", args, want)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Errorf("arg %d is %v, want %v", i, args[i], want[i])
+		}
+	}
+}
+
+// A write inside an open MULTI must be queued by the server, not executed, so
+// it travels as TXQUEUE <client_id> <CMD> <args...> (ADR 005).
+func TestWriteWithClientIdIsQueuedThroughTxqueue(t *testing.T) {
+	raw, args, err := mapCommandToWire("kv.set", map[string]interface{}{
+		"key":       "k",
+		"value":     "v",
+		"client_id": "cli-1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if raw != "TXQUEUE" {
+		t.Fatalf("raw command is %q, want TXQUEUE", raw)
+	}
+	want := []interface{}{"cli-1", "SET", "k", "v"}
+	if len(args) != len(want) {
+		t.Fatalf("got %v, want %v", args, want)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Errorf("arg %d is %v, want %v", i, args[i], want[i])
+		}
+	}
+}
+
+func TestEveryQueueableWriteFamilyIsWrapped(t *testing.T) {
+	cases := []struct {
+		command   string
+		payload   map[string]interface{}
+		wantInner string
+	}{
+		{"kv.del", map[string]interface{}{"key": "k"}, "DEL"},
+		{"kv.incr", map[string]interface{}{"key": "k"}, "INCR"},
+		{"kv.decr", map[string]interface{}{"key": "k"}, "DECR"},
+		{"hash.set", map[string]interface{}{"key": "h", "field": "f", "value": "v"}, "HSET"},
+		{"list.lpush", map[string]interface{}{"key": "l", "values": []interface{}{"v"}}, "LPUSH"},
+		{"set.add", map[string]interface{}{"key": "s", "members": []interface{}{"m"}}, "SADD"},
+	}
+
+	for _, tc := range cases {
+		payload := map[string]interface{}{"client_id": "cli-1"}
+		for k, v := range tc.payload {
+			payload[k] = v
+		}
+
+		raw, args, err := mapCommandToWire(tc.command, payload)
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", tc.command, err)
+		}
+		if raw != "TXQUEUE" {
+			t.Errorf("%s mapped to %q, want TXQUEUE", tc.command, raw)
+			continue
+		}
+		if args[0] != "cli-1" || args[1] != tc.wantInner {
+			t.Errorf("%s queued as %v, want [cli-1 %s ...]", tc.command, args[:2], tc.wantInner)
+		}
+	}
+}
+
+// A command the server cannot queue must be refused, never executed outside the
+// transaction it was meant to belong to.
+func TestUnqueueableCommandWithClientIdIsRefused(t *testing.T) {
+	for _, command := range []string{"kv.get", "stream.publish", "queue.consume"} {
+		payload := map[string]interface{}{
+			"key":       "k",
+			"room":      "r",
+			"event":     "e",
+			"queue":     "q",
+			"client_id": "cli-1",
+		}
+		if _, _, err := mapCommandToWire(command, payload); err == nil {
+			t.Errorf("%s inside a transaction should be refused, got no error", command)
+		}
+	}
+}
+
+func TestExecResponseDistinguishesCommitFromAbort(t *testing.T) {
+	committed := mapResponseFromWire("transaction.exec", []interface{}{"1", "2"}).(map[string]interface{})
+	if committed["success"] != true {
+		t.Errorf("a result list should report success, got %v", committed)
+	}
+	if results, ok := committed["results"].([]interface{}); !ok || len(results) != 2 {
+		t.Errorf("results are %v, want two entries", committed["results"])
+	}
+
+	// A watched key changed: the server replies null and nothing was applied.
+	aborted := mapResponseFromWire("transaction.exec", nil).(map[string]interface{})
+	if aborted["success"] != false || aborted["aborted"] != true {
+		t.Errorf("a null reply should report an abort, got %v", aborted)
+	}
+}
+
 // SSTATS replies with the stats map as-is, including the wipe discriminators
 // added in Synap 1.3.1 (hivellm/synap#257).
 func TestStreamStatsResponsePassesGenerationThrough(t *testing.T) {

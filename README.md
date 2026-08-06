@@ -188,10 +188,66 @@ for _, e := range events {
 // Stats
 stats, err := s.Stats(ctx, "events")
 
+// Rooms live in memory: a server restart wipes them and the next publish
+// recreates the room from offset 0. Every counter above resets with it and can
+// coincide with what you last saw, so a kept cursor would silently skip the new
+// events. `Generation` identifies this incarnation of the room and never
+// repeats a value you have already observed — remember it next to your cursor
+// and rewind when it changes.
+if stats.Generation != rememberedGeneration {
+    cursor = stats.MinOffset
+    rememberedGeneration = stats.Generation
+}
+
 // Enumerate / remove
 rooms, err := s.List(ctx)
 s.Delete(ctx, "events")
 ```
+
+## Transactions
+
+```go
+// Multi opens the scope and issues MULTI. Commands issued through the returned
+// Tx are queued by the server and applied atomically by Exec.
+tx, err := client.Transaction().Multi(ctx)
+if err != nil {
+    return err
+}
+
+if err := tx.KV().Set(ctx, "a", "1", 0); err != nil {
+    _ = tx.Discard(ctx)
+    return err
+}
+if err := tx.KV().Set(ctx, "b", "2", 0); err != nil {
+    _ = tx.Discard(ctx)
+    return err
+}
+
+result, err := tx.Exec(ctx)
+if err != nil {
+    return err
+}
+if result.Aborted {
+    // A watched key changed: nothing was applied.
+}
+```
+
+To watch keys for optimistic locking, open the scope without issuing MULTI yet:
+
+```go
+tx, _ := client.Transaction().Begin()
+tx.Watch(ctx, "a", "b")
+tx.Multi(ctx)
+// ... queue writes ...
+result, _ := tx.Exec(ctx)  // result.Aborted if "a" or "b" changed meanwhile
+```
+
+The client you called `Transaction()` on stays outside the transaction: writes
+issued through it while a `Tx` is open are applied immediately. Only the
+server's queueable commands can be queued (`SET`, `DEL`, `INCR`/`DECR`[`BY`],
+`HSET`, `HDEL`, `HINCRBY`, `LPUSH`/`RPUSH`/`LPOP`/`RPOP`, `SADD`, `SREM`);
+anything else returns an `UnsupportedCommand` error rather than executing
+outside the transaction.
 
 ## PubSub
 

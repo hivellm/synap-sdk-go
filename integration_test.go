@@ -329,3 +329,159 @@ func TestIntegration_MultipleHTTPClients(t *testing.T) {
 	// Cleanup
 	_, _ = client1.KV().Delete(ctx, key)
 }
+
+// A transaction must apply every queued write at EXEC and none before it, on
+// each transport: the writes travel as TXQUEUE on the native wires and as a
+// client_id-carrying payload over HTTP, so a regression on one wire is
+// invisible from the others.
+func TestIntegration_Transaction(t *testing.T) {
+	for _, tr := range transports {
+		t.Run(tr.name, func(t *testing.T) {
+			cfg := synap.NewConfig(tr.url).WithTimeout(5 * time.Second)
+			client := synap.NewClient(cfg)
+			ctx := context.Background()
+			prefix := fmt.Sprintf("go-tx-%s", tr.name)
+			keyA, keyB := prefix+":a", prefix+":b"
+
+			// A reader outside the transaction proves the writes are queued
+			// rather than applied as they are issued.
+			reader := synap.NewClient(synap.NewConfig("http://127.0.0.1:15500"))
+			_, _ = reader.KV().Delete(ctx, keyA)
+			_, _ = reader.KV().Delete(ctx, keyB)
+
+			tx, err := client.Transaction().Multi(ctx)
+			if err != nil {
+				t.Fatalf("Multi: %v", err)
+			}
+			if err := tx.KV().Set(ctx, keyA, "1", 0); err != nil {
+				t.Fatalf("queued Set: %v", err)
+			}
+			if err := tx.KV().Set(ctx, keyB, "2", 0); err != nil {
+				t.Fatalf("queued Set: %v", err)
+			}
+
+			if v, _ := reader.KV().Get(ctx, keyA); v != "" {
+				t.Fatalf("key was written before EXEC (value %q)", v)
+			}
+
+			result, err := tx.Exec(ctx)
+			if err != nil {
+				t.Fatalf("Exec: %v", err)
+			}
+			if !result.Success || result.Aborted {
+				t.Fatalf("transaction did not commit: %+v", result)
+			}
+
+			if v, _ := reader.KV().Get(ctx, keyA); v != "1" {
+				t.Errorf("after EXEC keyA is %q, want 1", v)
+			}
+			if v, _ := reader.KV().Get(ctx, keyB); v != "2" {
+				t.Errorf("after EXEC keyB is %q, want 2", v)
+			}
+
+			_, _ = reader.KV().Delete(ctx, keyA)
+			_, _ = reader.KV().Delete(ctx, keyB)
+		})
+	}
+}
+
+// DISCARD drops the queued writes: nothing reaches the store.
+func TestIntegration_TransactionDiscard(t *testing.T) {
+	client := synap.NewClient(synap.NewConfig("http://127.0.0.1:15500"))
+	ctx := context.Background()
+	key := "go-tx-discard:a"
+
+	_, _ = client.KV().Delete(ctx, key)
+
+	tx, err := client.Transaction().Multi(ctx)
+	if err != nil {
+		t.Fatalf("Multi: %v", err)
+	}
+	if err := tx.KV().Set(ctx, key, "queued", 0); err != nil {
+		t.Fatalf("queued Set: %v", err)
+	}
+	if err := tx.Discard(ctx); err != nil {
+		t.Fatalf("Discard: %v", err)
+	}
+
+	if v, _ := client.KV().Get(ctx, key); v != "" {
+		t.Errorf("after DISCARD the key holds %q, want nothing", v)
+	}
+}
+
+// Streams over every transport: this is the path that was broken, because
+// stream.consume mapped to a command the server does not have, so a native
+// consume failed while HTTP kept working.
+func TestIntegration_Stream(t *testing.T) {
+	for _, tr := range transports {
+		t.Run(tr.name, func(t *testing.T) {
+			cfg := synap.NewConfig(tr.url).WithTimeout(5 * time.Second)
+			client := synap.NewClient(cfg)
+			ctx := context.Background()
+			room := fmt.Sprintf("go-stream-%s", tr.name)
+
+			_ = client.Stream().Delete(ctx, room)
+
+			created, err := client.Stream().GetOrCreate(ctx, room, 0)
+			if err != nil {
+				t.Fatalf("GetOrCreate: %v", err)
+			}
+			if !created {
+				t.Errorf("a freshly deleted room should report created=true")
+			}
+
+			offset, err := client.Stream().Publish(ctx, room, "tick", map[string]int{"n": 1})
+			if err != nil {
+				t.Fatalf("Publish: %v", err)
+			}
+			if offset != 0 {
+				t.Errorf("first publish got offset %d, want 0", offset)
+			}
+
+			events, err := client.Stream().Consume(ctx, room, 0, 10)
+			if err != nil {
+				t.Fatalf("Consume: %v", err)
+			}
+			if len(events) != 1 {
+				t.Fatalf("got %d events, want 1", len(events))
+			}
+			if events[0].Event != "tick" {
+				t.Errorf("event name is %q, want tick", events[0].Event)
+			}
+
+			stats, err := client.Stream().Stats(ctx, room)
+			if err != nil {
+				t.Fatalf("Stats: %v", err)
+			}
+			if stats.Generation == 0 || stats.CreatedAt == 0 {
+				t.Errorf("stats carry no wipe discriminator: %+v", stats)
+			}
+
+			// Recreating the room must move the generation even though every
+			// counter resets to the same values (hivellm/synap#257).
+			before := stats.Generation
+			if err := client.Stream().Delete(ctx, room); err != nil {
+				t.Fatalf("Delete: %v", err)
+			}
+			if _, err := client.Stream().GetOrCreate(ctx, room, 0); err != nil {
+				t.Fatalf("GetOrCreate after delete: %v", err)
+			}
+			if _, err := client.Stream().Publish(ctx, room, "tick", map[string]int{"n": 1}); err != nil {
+				t.Fatalf("Publish after recreate: %v", err)
+			}
+			after, err := client.Stream().Stats(ctx, room)
+			if err != nil {
+				t.Fatalf("Stats after recreate: %v", err)
+			}
+			if after.MessageCount != stats.MessageCount {
+				t.Fatalf("the coincidence this test relies on no longer holds: %d vs %d",
+					after.MessageCount, stats.MessageCount)
+			}
+			if after.Generation <= before {
+				t.Errorf("generation %d did not move past %d after a wipe", after.Generation, before)
+			}
+
+			_ = client.Stream().Delete(ctx, room)
+		})
+	}
+}

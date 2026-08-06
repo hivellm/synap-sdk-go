@@ -67,6 +67,13 @@ func buildMultibulk(cmd string, args []interface{}) []byte {
 //	':' → integer (int64)
 //	'$' → bulk string (string or nil on $-1)
 //	'*' → array ([]interface{} or nil on *-1)
+//	'%' → map (map[string]interface{}) — SSTATS, SREAD entries, SUBSCRIBE
+//	'~' → set (decoded as an array, like every other client)
+//	'#' → boolean
+//	',' → double (float64)
+//	'!' → blob error (returned as a Go error)
+//	'=' → verbatim string (the payload after the 3-byte format prefix)
+//	'(' → big number (kept as its string form: it does not fit int64)
 //	'_' → null (RESP3 extension)
 func readResponse(r *bufio.Reader) (interface{}, error) {
 	line, err := readLine(r)
@@ -131,6 +138,102 @@ func readResponse(r *bufio.Reader) (interface{}, error) {
 			arr[i] = elem
 		}
 		return arr, nil
+
+	case '%':
+		// Map. The server answers SSTATS, SUBSCRIBE and every SREAD entry with
+		// one, so a client that cannot read it cannot use streams at all.
+		count, err := strconv.Atoi(payload)
+		if err != nil {
+			return nil, fmt.Errorf("RESP3: invalid map length %q: %w", payload, err)
+		}
+		if count == -1 {
+			return nil, nil
+		}
+		out := make(map[string]interface{}, count)
+		for range count {
+			key, err := readResponse(r)
+			if err != nil {
+				return nil, err
+			}
+			value, err := readResponse(r)
+			if err != nil {
+				return nil, err
+			}
+			out[fmt.Sprintf("%v", key)] = value
+		}
+		return out, nil
+
+	case '~':
+		// Set — order is not meaningful, but every client decodes it as an
+		// array because Go has no set type.
+		count, err := strconv.Atoi(payload)
+		if err != nil {
+			return nil, fmt.Errorf("RESP3: invalid set length %q: %w", payload, err)
+		}
+		if count == -1 {
+			return nil, nil
+		}
+		arr := make([]interface{}, count)
+		for i := range count {
+			elem, err := readResponse(r)
+			if err != nil {
+				return nil, err
+			}
+			arr[i] = elem
+		}
+		return arr, nil
+
+	case '#':
+		// Boolean: #t / #f
+		switch payload {
+		case "t":
+			return true, nil
+		case "f":
+			return false, nil
+		default:
+			return nil, fmt.Errorf("RESP3: invalid boolean %q", payload)
+		}
+
+	case ',':
+		// Double
+		f, err := strconv.ParseFloat(payload, 64)
+		if err != nil {
+			return nil, fmt.Errorf("RESP3: invalid double %q: %w", payload, err)
+		}
+		return f, nil
+
+	case '(':
+		// Big number: keep the decimal string, it does not fit an int64.
+		return payload, nil
+
+	case '!':
+		// Blob error: the message follows as a counted block.
+		length, err := strconv.Atoi(payload)
+		if err != nil {
+			return nil, fmt.Errorf("RESP3: invalid blob error length %q: %w", payload, err)
+		}
+		data := make([]byte, length+2)
+		if _, err := readFull(r, data); err != nil {
+			return nil, fmt.Errorf("RESP3: read blob error: %w", err)
+		}
+		return nil, newServerError(string(data[:length]))
+
+	case '=':
+		// Verbatim string: a counted block whose first three bytes are a format
+		// hint ("txt:" / "mkd:") the value itself does not include.
+		length, err := strconv.Atoi(payload)
+		if err != nil {
+			return nil, fmt.Errorf("RESP3: invalid verbatim length %q: %w", payload, err)
+		}
+		data := make([]byte, length+2)
+		if _, err := readFull(r, data); err != nil {
+			return nil, fmt.Errorf("RESP3: read verbatim string: %w", err)
+		}
+		body := string(data[:length])
+		if len(body) > 4 && body[3] == ':' {
+			body = body[4:]
+		}
+		return body, nil
 
 	case '_':
 		// RESP3 null

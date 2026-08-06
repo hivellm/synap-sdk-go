@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Transactions.** `client.Transaction()` opens a Redis-compatible
+  MULTI/EXEC scope — the last SDK to get one. `Multi(ctx)` returns a `*Tx`
+  whose `KV()`, `Hash()`, `List()` and `Set()` accessors issue their commands
+  inside the transaction, so the client id that keys it server-side is threaded
+  through for you instead of being passed to every call. `Begin()` opens the
+  scope without contacting the server (for `Watch` before `Multi`), `Resume()`
+  rebinds a transaction by id, and `Exec` reports commit or abort through
+  `ExecResult`. Writes are queued by the server — they travel as
+  `TXQUEUE <client_id> <CMD> <args...>` on the native transports (ADR 005) —
+  and a command the server cannot queue is refused rather than silently
+  executed outside the transaction. The parent client stays non-transactional
+  while a `Tx` is open. Verified against a live server on HTTP, SynapRPC and
+  RESP3, including that nothing reaches the store before `Exec`.
+
 ### Fixed
+- **RESP3 maps decode at all.** The reader stopped at the `%` type byte with
+  `unknown type byte "%"`, and the server answers `SSTATS`, `SUBSCRIBE` and
+  every `SREAD` entry with a map — so streams were unusable over RESP3 even
+  after the command names were fixed. Maps, sets (`~`), booleans (`#`),
+  doubles (`,`), big numbers (`(`), verbatim strings (`=`) and blob errors
+  (`!`) all decode now.
 - **Consuming a stream over a native transport works at all.**
   `stream.consume` mapped to `SCONSUME`, a command the Synap server has never
   implemented, so every SynapRPC/RESP3 consume failed as an unknown command; it

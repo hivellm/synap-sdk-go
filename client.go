@@ -122,6 +122,31 @@ type SynapClient struct {
 	endpoint   string
 	rpc        *SynapRpcTransport
 	resp3      *Resp3Transport
+	// txClientID keys an open transaction. It is empty on the client returned
+	// by NewClient and set only on the shallow copy a Tx owns, so commands
+	// issued through a transaction scope carry it and commands issued through
+	// the plain client never do.
+	txClientID string
+}
+
+// withClientID splices a client_id field into an already-encoded JSON object.
+func withClientID(payloadJSON []byte, clientID string) ([]byte, error) {
+	fields := map[string]json.RawMessage{}
+	if len(payloadJSON) > 0 {
+		if err := json.Unmarshal(payloadJSON, &fields); err != nil {
+			return nil, fmt.Errorf("synap: splice client_id: %w", err)
+		}
+	}
+	encoded, err := json.Marshal(clientID)
+	if err != nil {
+		return nil, fmt.Errorf("synap: encode client_id: %w", err)
+	}
+	fields["client_id"] = encoded
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("synap: re-encode payload: %w", err)
+	}
+	return out, nil
 }
 
 // NewClient creates a new SynapClient using the provided Config.
@@ -188,6 +213,9 @@ func (c *SynapClient) sendRPC(ctx context.Context, command string, payload inter
 	// invalid UTF-8 sequence with U+FFFD, so a binary value was destroyed here,
 	// inside the client, before it was ever framed. See payloadToMap.
 	payloadMap := payloadToMap(payload)
+	if c.txClientID != "" {
+		payloadMap["client_id"] = c.txClientID
+	}
 
 	// Map SDK command to native wire command + args
 	wireCmd, wireArgs, err := mapCommandToWire(command, payloadMap)
@@ -220,6 +248,12 @@ func (c *SynapClient) sendRESP3(ctx context.Context, command string, payload int
 	}
 	var payloadMap map[string]interface{}
 	_ = json.Unmarshal(payloadBytes, &payloadMap)
+	if c.txClientID != "" {
+		if payloadMap == nil {
+			payloadMap = map[string]interface{}{}
+		}
+		payloadMap["client_id"] = c.txClientID
+	}
 
 	wireCmd, wireArgs, err := mapCommandToWire(command, payloadMap)
 	if err != nil {
@@ -268,6 +302,16 @@ func (c *SynapClient) sendHTTP(ctx context.Context, command string, payload inte
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return response{}, fmt.Errorf("synap: marshal payload: %w", err)
+	}
+
+	// Inside a transaction scope every command carries the client_id that keys
+	// the open MULTI. Splicing it into the already-encoded object keeps every
+	// other field byte-identical instead of round-tripping through a map.
+	if c.txClientID != "" {
+		payloadBytes, err = withClientID(payloadBytes, c.txClientID)
+		if err != nil {
+			return response{}, err
+		}
 	}
 
 	reqID, err := newRequestID()
@@ -327,7 +371,43 @@ func (c *SynapClient) sendHTTP(ctx context.Context, command string, payload inte
 }
 
 // mapCommandToWire converts an SDK command + JSON payload to native wire command + args.
+// txQueueable lists the raw commands the server can queue inside a MULTI via
+// TXQUEUE (ADR 005) — exactly the server's TransactionCommand enum.
+var txQueueable = map[string]struct{}{
+	"SET": {}, "DEL": {},
+	"INCR": {}, "DECR": {}, "INCRBY": {}, "DECRBY": {},
+	"HSET": {}, "HDEL": {}, "HINCRBY": {},
+	"LPUSH": {}, "RPUSH": {}, "LPOP": {}, "RPOP": {},
+	"SADD": {}, "SREM": {},
+}
+
 func mapCommandToWire(command string, payload map[string]interface{}) (string, []interface{}, error) {
+	// A write carrying a client_id belongs to an open MULTI and travels as
+	// `TXQUEUE <client_id> <CMD> <args...>`, so the server queues it instead of
+	// executing it immediately (ADR 005). Anything the server cannot queue is
+	// refused here rather than silently executed outside the transaction.
+	if clientID, ok := payload["client_id"]; ok && clientID != nil && clientID != "" &&
+		!strings.HasPrefix(command, "transaction.") {
+		rest := make(map[string]interface{}, len(payload))
+		for k, v := range payload {
+			if k != "client_id" {
+				rest[k] = v
+			}
+		}
+		innerCmd, innerArgs, err := mapCommandToWire(command, rest)
+		if err != nil {
+			return "", nil, err
+		}
+		if _, queueable := txQueueable[innerCmd]; !queueable {
+			return "", nil, &SynapError{
+				Message: fmt.Sprintf("command '%s' cannot be queued inside a transaction", command),
+				Code:    "UnsupportedCommand",
+			}
+		}
+		args := append([]interface{}{fmt.Sprintf("%v", clientID), innerCmd}, innerArgs...)
+		return "TXQUEUE", args, nil
+	}
+
 	getStr := func(key string) string {
 		if v, ok := payload[key]; ok {
 			if s, ok := v.(string); ok {
@@ -504,6 +584,22 @@ func mapCommandToWire(command string, payload map[string]interface{}) (string, [
 		return "SSTATS", []interface{}{getStr("room")}, nil
 	case "stream.delete":
 		return "SDELETE", []interface{}{getStr("room")}, nil
+
+	// Transaction
+	case "transaction.multi":
+		return "MULTI", []interface{}{getStr("client_id")}, nil
+	case "transaction.exec":
+		return "EXEC", []interface{}{getStr("client_id")}, nil
+	case "transaction.discard":
+		return "DISCARD", []interface{}{getStr("client_id")}, nil
+	case "transaction.watch":
+		args := []interface{}{getStr("client_id")}
+		for _, k := range getStrSlice("keys") {
+			args = append(args, k)
+		}
+		return "WATCH", args, nil
+	case "transaction.unwatch":
+		return "UNWATCH", []interface{}{getStr("client_id")}, nil
 
 	// PubSub
 	case "pubsub.publish":
@@ -709,6 +805,15 @@ func mapResponseFromWire(command string, result interface{}) interface{} {
 		return map[string]interface{}{"rooms": []interface{}{}}
 	case "stream.stats":
 		return result
+	case "transaction.multi", "transaction.discard", "transaction.watch", "transaction.unwatch":
+		return map[string]interface{}{"success": result == "OK" || result == true}
+	case "transaction.exec":
+		// Mirror the HTTP envelope: a result list means the transaction
+		// committed, null means a watched key changed and it aborted.
+		if arr, ok := result.([]interface{}); ok {
+			return map[string]interface{}{"success": true, "results": arr}
+		}
+		return map[string]interface{}{"success": false, "aborted": true}
 	default:
 		return result
 	}
