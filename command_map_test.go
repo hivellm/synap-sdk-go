@@ -210,6 +210,47 @@ func TestWriteWithClientIdIsQueuedThroughTxqueue(t *testing.T) {
 	}
 }
 
+func TestCounterAmountMapsToIncrByAndDecrBy(t *testing.T) {
+	// The HTTP envelope applies every `amount`, zero and negative included;
+	// the native map used to send INCRBY only for amounts above 1.
+	cases := []struct {
+		command string
+		payload map[string]interface{}
+		wantCmd string
+		wantArg interface{}
+	}{
+		{"kv.incr", map[string]interface{}{"key": "c"}, "INCR", nil},
+		{"kv.decr", map[string]interface{}{"key": "c", "amount": nil}, "DECR", nil},
+		{"kv.incr", map[string]interface{}{"key": "c", "amount": 10}, "INCRBY", int64(10)},
+		{"kv.incr", map[string]interface{}{"key": "c", "amount": float64(0)}, "INCRBY", "0"},
+		{"kv.incr", map[string]interface{}{"key": "c", "amount": float64(-7)}, "INCRBY", "-7"},
+		{"kv.decr", map[string]interface{}{"key": "c", "amount": float64(4)}, "DECRBY", "4"},
+		// Non-integers travel as JSON text, which the server refuses.
+		{"kv.incr", map[string]interface{}{"key": "c", "amount": 1.5}, "INCRBY", "1.5"},
+		{"kv.incr", map[string]interface{}{"key": "c", "amount": "10"}, "INCRBY", `"10"`},
+	}
+
+	for _, tc := range cases {
+		raw, args, err := mapCommandToWire(tc.command, tc.payload, TransportSynapRPC)
+		if err != nil {
+			t.Fatalf("%s %v: unexpected error: %v", tc.command, tc.payload, err)
+		}
+		if raw != tc.wantCmd {
+			t.Errorf("%s %v mapped to %q, want %q", tc.command, tc.payload, raw, tc.wantCmd)
+			continue
+		}
+		if tc.wantArg == nil {
+			if len(args) != 1 || args[0] != "c" {
+				t.Errorf("%s %v: args %v, want [c]", tc.command, tc.payload, args)
+			}
+			continue
+		}
+		if len(args) != 2 || args[0] != "c" || args[1] != tc.wantArg {
+			t.Errorf("%s %v: args %#v, want [c %#v]", tc.command, tc.payload, args, tc.wantArg)
+		}
+	}
+}
+
 func TestEveryQueueableWriteFamilyIsWrapped(t *testing.T) {
 	cases := []struct {
 		command   string

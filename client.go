@@ -383,6 +383,34 @@ var txQueueable = map[string]struct{}{
 // mapCommandToWire converts an SDK command + payload to the raw wire command
 // and arguments. The transport is needed for the handful of commands the two
 // native wires spell differently.
+// counterAmount returns the INCRBY/DECRBY argument of kv.incr / kv.decr, and
+// false when the payload carries no amount (absent or null).
+//
+// Every amount the HTTP envelope receives is applied there, zero and negative
+// ones included, so the native maps forward every amount too. An integer
+// travels as an integer; anything else travels as its JSON text -- the exact
+// text the HTTP envelope receives -- so the server accepts it only when it is
+// an integer and refuses it on every transport otherwise. (Payload maps come
+// from json.Unmarshal, where numbers are float64; json.Marshal renders an
+// integral float64 such as 10 as "10".)
+func counterAmount(payload map[string]interface{}) (interface{}, bool) {
+	v, ok := payload["amount"]
+	if !ok || v == nil {
+		return nil, false
+	}
+	switch n := v.(type) {
+	case int:
+		return int64(n), true
+	case int64:
+		return n, true
+	}
+	text, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v), true
+	}
+	return string(text), true
+}
+
 func mapCommandToWire(command string, payload map[string]interface{}, transport TransportMode) (string, []interface{}, error) {
 	// A write carrying a client_id belongs to an open MULTI and travels as
 	// `TXQUEUE <client_id> <CMD> <args...>`, so the server queues it instead of
@@ -458,15 +486,13 @@ func mapCommandToWire(command string, payload map[string]interface{}, transport 
 	case "kv.exists":
 		return "EXISTS", []interface{}{getStr("key")}, nil
 	case "kv.incr":
-		amount := getFloat("amount")
-		if amount > 1 {
-			return "INCRBY", []interface{}{getStr("key"), int(amount)}, nil
+		if amount, ok := counterAmount(payload); ok {
+			return "INCRBY", []interface{}{getStr("key"), amount}, nil
 		}
 		return "INCR", []interface{}{getStr("key")}, nil
 	case "kv.decr":
-		amount := getFloat("amount")
-		if amount > 1 {
-			return "DECRBY", []interface{}{getStr("key"), int(amount)}, nil
+		if amount, ok := counterAmount(payload); ok {
+			return "DECRBY", []interface{}{getStr("key"), amount}, nil
 		}
 		return "DECR", []interface{}{getStr("key")}, nil
 
